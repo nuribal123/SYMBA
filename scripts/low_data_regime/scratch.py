@@ -357,7 +357,7 @@ def run_pytorch_finetuning(model_type, checkpoint_path, train_dataset, val_datas
         'task_config': task_config,
         'model_type': model_type
     }, checkpoint_name)
-    print(f"💾 Mejor modelo guardado con éxito en: {checkpoint_name}")
+    print(f"Mejor modelo guardado con éxito en: {checkpoint_name}")
         
     return model, best_val_metric
 
@@ -944,11 +944,11 @@ if __name__ == "__main__":
 
         if torch.cuda.is_available():
             major, minor = torch.cuda.get_device_capability()
-            print(f"🟢 PASO 0 (Clúster): Verificando GPU... (Capacidad CUDA: {major}.{minor})")
+            print(f"PASO 0 (Clúster): Verificando GPU... (Capacidad CUDA: {major}.{minor})")
             if major < 7:
                 raise RuntimeError(f"❌ ERROR: La GPU asignada es demasiado antigua ({major}.{minor}). Se requiere >= 7.0.")
         else:
-            print("🟢 PASO 0 (Clúster): No se detectó GPU. Ejecutando en CPU.")
+            print("PASO 0 (Clúster): No se detectó GPU. Ejecutando en CPU.")
     else:
         config_id = 0  # En modo local, ejecutamos por defecto el primer experimento (índice 0)
         print(" PASO 0 (Local): Ejecutando en modo manual local.")
