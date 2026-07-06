@@ -67,13 +67,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.neural_network import MLPClassifier
 import sys
-sys.path.append("/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/training_code/MAE")
+#sys.path.append("./training_code/MAE")
 from resnet_databases_curriculum_ssim import ResNet3D_Autoencoder
-sys.path.append("/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/training_code/MAE/all_d/classes")
+#sys.path.append("./training_code/MAE/all_d/classes")
 from ViT3D_Autoencoder import ViT3D_Autoencoder_all_d
-sys.path.append("/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/analysis/code/downstream/architectures_amyloid")
+#sys.path.append("./analysis/code/downstream/architectures_amyloid")
 from architectures import ResNet_3D_SimCLR, BasicBlock3D, Bottleneck3D, ViT3D_SimCLR, ViT3D_MAE_Base_Inference, SimCLR_ViT3D_BrainIAC, ResNet18_3D_MAE, ViT3D_SimCLR_Base, PatchEmbed3D, PatchEmbed3D_BrainIAC, ViT3D_Autoencoder_age
-sys.path.append("/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/analysis/code/downstream/modules")
+#sys.path.append("./analysis/code/downstream/modules")
 from visualization_functions import extract_if_compressed, find_nii_files, get_subject_id, get_last_available_epoch, preprocess_image, mask_patches_fixed, save_comparison_slices, get_visualization_brain, save_reconstruction_plot 
 from visualization_architectures import ResNet50_3D_UNet, ResNet34_3D_MAE, ResNet50_3D_MAE
 from sklearn.metrics import roc_auc_score, r2_score
@@ -88,7 +88,6 @@ def set_all_seeds(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        # Opcional: Forzar determinismo en operaciones de GPU (puede ralentizar un poco)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
@@ -104,14 +103,12 @@ def get_model(model_type, checkpoint_path=None, device="cuda", pretrained=True):
     Si pretrained=True, carga los pesos del MAE de tu entrenamiento por curriculum.
     Si pretrained=False, devuelve la red con inicialización aleatoria (Desde cero).
     """
-    # 1. Importamos dinámicamente las clases de script original de curriculum
     
     
     print(f" Inicializando arquitectura: {model_type}")
     
-    # 2. Instanciar según el tipo de tu modelo
+    # depending on the model
     if model_type == "ResNet50_3D_MAE":
-        # Asegúrate de usar los mismos parámetros de parche que en tu curriculum
         model = ResNet50_3D_MAE(in_chans=1)
         embed_dim = 2048
     elif model_type == "ResNet34_3D_MAE":
@@ -120,14 +117,14 @@ def get_model(model_type, checkpoint_path=None, device="cuda", pretrained=True):
     else:
         raise ValueError(f"Modelo {model_type} no reconocido.")
         
-    # 3. CARGA DE PESOS CONTROLADA (La clave del Baseline)
+    # loading weights
     if pretrained and checkpoint_path:
         if os.path.exists(checkpoint_path):
             print(f" Cargando pesos preentrenados por Curriculum desde: {checkpoint_path}")
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
             state_dict = checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint
             
-            # Limpieza defensiva de prefijos inspirada en el código de BrainIAC
+            # cleaning based on BrainIAC
             new_state_dict = {}
             for k, v in state_dict.items():
                 if k.startswith("net."):
@@ -151,7 +148,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
 
-# 2. Function to filter a balanced few-shot dataset (K examples per class)
+# Function to filter a balanced few-shot dataset (K examples per class)
 def get_few_shot_indices(dataset, K, num_classes):
     class_counts = {c: 0 for c in range(num_classes)}
     few_shot_indices = []
@@ -169,20 +166,19 @@ def get_few_shot_indices(dataset, K, num_classes):
 class FineTuneWrapper(nn.Module):
     def __init__(self, backbone, embed_dim, num_classes, is_regression=False):
         super().__init__()
-        self.backbone = backbone  # Tu modelo ResNet_3D_MAE
+        self.backbone = backbone  # Resnet model
         self.is_regression = is_regression
         
-        # Cabecera lineal de adaptación (Linear Head)
+        # Linear Head
         if is_regression:
             self.classifier = nn.Linear(embed_dim, 1)
         else:
             self.classifier = nn.Linear(embed_dim, num_classes)
             
     def forward(self, x):
-        # Desempaquetamos la tupla del MAE (omitimos la reconstrucción volumétrica)
         _, z_global = self.backbone(x) 
         
-        # z_global ya viene con la media reducida del volumen dim=(2,3,4) en tu curriculum
+        # z_global 
         logits = self.classifier(z_global)
         
         return logits.squeeze(-1) if self.is_regression else logits
@@ -194,27 +190,27 @@ def run_pytorch_finetuning(model_type, checkpoint_path, train_dataset, val_datas
     """
     Ejecuta el fine-tuning completo actualizando pesos y evaluando métricas en cada época.
     """
-    # 1. Cargar el backbone base (Preentrenado o Aleatorio)
+    # loading the base backbone (pretrained or random)
     backbone, embed_dim = get_model(model_type, checkpoint_path, device, pretrained=pretrained)
     
-    # 2. Configurar parámetros de la tarea downstream
+    # Configurating the parameters for the downstream task
     task_type = task_config["task_type"]
     num_classes = task_config["num_classes"]
     
     is_regression = (task_type == "regression")
     
-    # 3. Envolver en el clasificador adaptado
+    # Wrapping the adapted classifier
     model = FineTuneWrapper(backbone, embed_dim, num_classes, is_regression=is_regression).to(device)
     
-    # Asegurar que TODAS las capas participen del cálculo de gradientes
+    # Ensuring all the layers participate in the calculation of the gradients
     model.train() 
     for param in model.parameters():
         param.requires_grad = True
         
-    # 4. Optimizador con Learning Rates diferenciales (Estrategia del Paper)
+    # Optimizer with the differential learning rates
     optimizer = optim.AdamW([
-        {'params': model.backbone.parameters(), 'lr': 1e-5},    # LR muy bajo para el foundation model
-        {'params': model.classifier.parameters(), 'lr': 1e-3}   # LR normal para la cabecera lineal
+        {'params': model.backbone.parameters(), 'lr': 1e-5},    # low lr for backpropagation
+        {'params': model.classifier.parameters(), 'lr': 1e-3}   # high lr for classifier head
     ], weight_decay=1e-4)
     
     criterion = nn.MSELoss() if is_regression else nn.CrossEntropyLoss()
@@ -222,7 +218,7 @@ def run_pytorch_finetuning(model_type, checkpoint_path, train_dataset, val_datas
     train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=2)
     val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=2)
     
-    # Extraemos el sufijo (ej. "_25pc"). Si no hay, queda vacío "".
+    # we extract the suffix
     sufijo = task_config.get("suffix", "")
     log_file_name = f"scratch_partitions_trials_please_bestmodel/results_scarcity_bestmodel/finetuning_metrics_scratch{sufijo}.txt"
 
@@ -230,7 +226,7 @@ def run_pytorch_finetuning(model_type, checkpoint_path, train_dataset, val_datas
     if directorio_log:
         os.makedirs(directorio_log, exist_ok=True)
     
-    # Creamos/Limpiamos el archivo al inicio del entrenamiento y escribimos la cabecera
+    # create/clean the file in the beginning and write the heading
     with open(log_file_name, "w") as f_log:
         f_log.write(f"Iniciando Entrenamiento - Epochs: {epochs}\n")
         f_log.write("Epoch | Loss Train | Loss Val | Metricas\n")
@@ -242,15 +238,13 @@ def run_pytorch_finetuning(model_type, checkpoint_path, train_dataset, val_datas
 
 
     print(f" Guardando logs en: {log_file_name}")
-    best_auc = 0.0  # AÑADIR ESTO: Rastreador del mejor AUC
+    best_auc = 0.0  # to save the best AUC
 
-    best_val_metric = -float('inf') # Rastreará la mejor métrica (R2 o AUC)
-    best_model_wts = copy.deepcopy(model.state_dict()) # Guarda los pesos iniciales por si acaso
+    best_val_metric = -float('inf') # best metric (R2 or AUC)
+    best_model_wts = copy.deepcopy(model.state_dict()) # saves initial weights also
 
     for epoch in range(epochs):
-        # --------------------------------------------------
-        # FASE A: ENTRENAMIENTO (ACTUALIZACIÓN DE PESOS)
-        # --------------------------------------------------
+        # First phase: training
         model.train()
         running_loss = 0.0
         for batch in train_loader:
@@ -270,9 +264,7 @@ def run_pytorch_finetuning(model_type, checkpoint_path, train_dataset, val_datas
             
         avg_train_loss = running_loss / len(train_loader)
         
-        # --------------------------------------------------
-        # FASE B: VALIDACIÓN Y MÉTRICAS (¡FALTABA ESTO!)
-        # --------------------------------------------------
+        # Second phase: validation and metrics
         model.eval()
         val_loss = 0.0
         all_preds = []
@@ -294,10 +286,10 @@ def run_pytorch_finetuning(model_type, checkpoint_path, train_dataset, val_datas
                 if is_regression:
                     all_preds.extend(outputs.cpu().numpy())
                 else:
-                    # Guardamos probabilidades softmax de la clase positiva para calcular AUC
+                    # saving softmax probabities of the possitive class to calculate AUC
                     probs = F.softmax(outputs, dim=1)
                     if num_classes == 2:
-                        all_preds.extend(probs[:, 1].cpu().numpy()) #Probabilidad clase 1
+                        all_preds.extend(probs[:, 1].cpu().numpy()) #Probability class 1
                     else:
                         all_preds.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
@@ -306,50 +298,47 @@ def run_pytorch_finetuning(model_type, checkpoint_path, train_dataset, val_datas
         all_preds = np.array(all_preds)
         all_labels = np.array(all_labels)
         
-        # 5. Cálculo Dinámico de Métricas según la Tarea
+        # Dynamic calculation of the metrics depending on the task
         metrics_str = ""
-        current_val_metric = 0.0 # Variable para decidir si es el mejor modelo
+        current_val_metric = 0.0 # Variable to decide if it is the best model
 
         if is_regression:
             r2 = r2_score(all_labels, all_preds)
             mae = mean_absolute_error(all_labels, all_preds)
             metrics_str = f"R2: {r2:.4f} | MAE: {mae:.4f}"
-            current_val_metric = r2 # En regresión, maximizamos R2
+            current_val_metric = r2 # max R2 in regression
         else:
             if num_classes == 2:
                 auc_score = roc_auc_score(all_labels, all_preds)
                 preds_bin = (all_preds >= 0.5).astype(int)
                 bal_acc = balanced_accuracy_score(all_labels, preds_bin)
                 metrics_str = f"AUC: {auc_score:.4f} | BalAcc: {bal_acc:.4f}"
-                current_val_metric = auc_score # En binaria, maximizamos AUC
+                current_val_metric = auc_score # maximizing AUC
             else:
-                # Para multiclase, asumo que quieres maximizar Balanced Accuracy o podrías calcular AUC multi-clase
+                # for multiclass
                 preds_bin = np.argmax(all_preds, axis=1)
                 bal_acc = balanced_accuracy_score(all_labels, preds_bin)
                 metrics_str = f"BalAcc: {bal_acc:.4f}"
                 current_val_metric = bal_acc
 
-        print(f" 🗓️ Época {epoch+1}/{epochs} -> Loss Train: {avg_train_loss:.4f} | Loss Val: {avg_val_loss:.4f} | {metrics_str}")
+        print(f" Epoch {epoch+1}/{epochs} -> Loss Train: {avg_train_loss:.4f} | Loss Val: {avg_val_loss:.4f} | {metrics_str}")
         
-        # GUARDAR LOS MEJORES PESOS 
+        # saving best weights
         if current_val_metric > best_val_metric:
             best_val_metric = current_val_metric
-            best_model_wts = copy.deepcopy(model.state_dict()) # Clonamos los pesos ganadores
-            print(f"  ¡Nuevo mejor modelo! Métrica: {best_val_metric:.4f}")
+            best_model_wts = copy.deepcopy(model.state_dict()) # Cloning best weights
+            print(f"  new best model with: {best_val_metric:.4f}")
 
       
-        # Abrimos en modo "a" (append) para añadir una nueva línea sin borrar lo anterior
+        # without deleting prev
         with open(log_file_name, "a") as f_log:
             f_log.write(f"{epoch+1} | {avg_train_loss:.4f} | {avg_val_loss:.4f} | {metrics_str}\n")
 
-    # 6. GUARDAR CHECKPOINT FINAL DE ESTE EXPERIMENTO (¡FALTABA ESTO!)
-    #mode_name = "pretrained_curriculum" if pretrained else "random_scratch"
-    #output_path = f"finetuned_{model_type}_{mode_name}.pth"
-    # --- NUEVO: RESTAURAR EL MEJOR MODELO ANTES DE GUARDAR Y SALIR ---
+    
     print(f"\nEntrenamiento completado. Cargando los pesos de la mejor época (Métrica Val: {best_val_metric:.4f})...")
     model.load_state_dict(best_model_wts)
 
-    # 6. GUARDAR CHECKPOINT FINAL DE ESTE EXPERIMENTO
+    # saving best
     sufijo = task_config.get("suffix", "")
     checkpoint_name = f"scratch_partitions_trials_please_bestmodel/results_scarcity_bestmodel/best_downstream_model_scratch{sufijo}.pth"
     torch.save({
@@ -399,21 +388,15 @@ def extract_features_from_model(model, model_type, x):
         h, _ = model(x)
         return h
     elif model_type == "vit_mae_all_d":
-        # ¡AQUÍ ESTÁ EL CAMBIO! Añadimos mask_size_voxels=16
-        # Ratio 0.0 asegura que usamos la imagen completa para extraer features reales.
         _, _, z_global = model(x, mask_ratio=0.0, mask_size_voxels=16) 
         return z_global
     elif model_type == "vit_mae_base":
-        # ¡AQUÍ ESTÁ EL CAMBIO! Añadimos mask_size_voxels=16
-        # Ratio 0.0 asegura que usamos la imagen completa para extraer features reales.
-        #_, _, z_global = model(x, mask_ratio=0.0, mask_size_voxels=16) 
         z_global = model(x)
         return z_global
     elif model_type == "vit_mae_small":
         z_global = model(x)
         return z_global
     elif model_type == "vit_mae_3d":
-        # mask_ratio=0.0 es VITAL para que vea la imagen completa durante la evaluación
         _, _, z_global = model(x, mask_ratio=0.0, mask_size_voxels=16)
         return z_global
     
@@ -427,13 +410,10 @@ def extract_features_from_model(model, model_type, x):
 
     elif model_type == "vit_simclr_brainiac":
         h, _ = model(x)
-        return h  # Devolvemos la representación global h, no la proyección
+        return h 
 
 
-# ======================================================
-# 3. EXTRACCIÓN Y CACHÉ DE EMBEDDINGS
-# ======================================================
-# Añade 'embeddings_dir' como último parámetro
+# extraction 
 def get_or_extract_embeddings(epoch, dataloader, model_type, checkpoint_path, embeddings_dir):
     cache_file = f"{embeddings_dir}/features_epoch_{epoch}_v4_amyloid_mci_age_gender.pkl" 
     
@@ -443,11 +423,11 @@ def get_or_extract_embeddings(epoch, dataloader, model_type, checkpoint_path, em
     print(f"Extrayendo características para epoch {epoch}...")
     model, _ = get_model(model_type, checkpoint_path, DEVICE)
     
-    # Añadimos las listas para age y gender
+    # adding lists for age and gender
     latent_vectors, labels_dx_list, labels_phc_list, labels_amyloid_list, labels_mci_list, labels_age_list, labels_gender_list = [], [], [], [], [], [], []
     
     with torch.no_grad():
-        # Añadimos ages y genders al for
+        # age and gender to for
         for images, dxs, phcs, amyloids, mcis, ages, genders in tqdm(dataloader, leave=False):
             images = images.to(DEVICE)
             features = extract_features_from_model(model, model_type, images)
@@ -466,10 +446,10 @@ def get_or_extract_embeddings(epoch, dataloader, model_type, checkpoint_path, em
     y_phc = np.concatenate(labels_phc_list, axis=0)
     y_amyloid = np.concatenate(labels_amyloid_list, axis=0)
     y_mci = np.concatenate(labels_mci_list, axis=0)
-    y_age = np.concatenate(labels_age_list, axis=0)       # AÑADIDO
-    y_gender = np.concatenate(labels_gender_list, axis=0) # AÑADIDO
+    y_age = np.concatenate(labels_age_list, axis=0)       
+    y_gender = np.concatenate(labels_gender_list, axis=0) 
 
-    # Guardar TODAS las variables en el cache
+    # saving all variables
     joblib.dump((X, y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender), cache_file) 
 
     return X, y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender
@@ -516,9 +496,9 @@ def regroup_dx_for_plot(y_dx):
 def save_scatter_projection(X_2d, labels, save_path, title):
 
     class_info = {
-        0: {"name": "CN + SMC", "color": "#1f77b4"},   # azul
-        1: {"name": "AD",        "color": "#d62728"},  # rojo
-        2: {"name": "LMCI + EMCI","color": "#2ca02c"}  # verde
+        0: {"name": "CN + SMC", "color": "#1f77b4"},   # blue
+        1: {"name": "AD",        "color": "#d62728"},  # red
+        2: {"name": "LMCI + EMCI","color": "#2ca02c"}  # green
     }
 
     plt.figure(figsize=(6,5))
@@ -550,9 +530,7 @@ def save_scatter_projection(X_2d, labels, save_path, title):
     plt.savefig(save_path, dpi=300)
     plt.close()
 
-# ======================================================
-# 4. EVALUACIÓN DOWNSTREAM (TOTALMENTE INDEPENDIENTE)
-# ======================================================
+# downstream independent evaluation
 import os
 import numpy as np
 import pandas as pd
@@ -563,7 +541,7 @@ from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import balanced_accuracy_score, matthews_corrcoef, roc_auc_score, r2_score, mean_absolute_error
 
 
-# --- FUNCIONES DE VISUALIZACIÓN ---
+# visualization functions
 
 def save_roc_comparison(all_model_preds, save_path, title="Task ROC Comparison"):
     plt.figure(figsize=(7, 7))
@@ -586,7 +564,7 @@ def save_auroc_bar_plot(results_dict, save_path):
     """ Grafica una comparativa de barras de AUROC filtrando las desviaciones estándar """
     df = pd.DataFrame(results_dict).T.reset_index().rename(columns={'index': 'Model'})
     
-    # SOLUCIÓN CRÍTICA 3: Filtrar para quedarse solo con las medias de AUROC o la tarea multiclase, evitando barras de STD inservibles
+    
     cols = [c for c in df.columns if 'auroc' in c.lower() and ('mean' in c.lower() or 'multi' in c.lower())] + ['Model']
     df_melted = df[cols].melt(id_vars='Model', var_name='Task', value_name='AUROC')
     
@@ -697,12 +675,12 @@ def find_nii_files(root):
                 nii_paths.append(full_path)
     return nii_paths
 
-# --- FUNCIÓN RECUPERADA QUE FALTABA ---
+
 def get_subject_id(path):
     match = re.search(r'(\d{3})S(\d{4})', str(path))
     if match: return f"{match.groups()[0]}_S_{match.groups()[1]}"
     return None
-# ---------------------------------------
+    
 
 def get_last_available_epoch(checkpoint_dir, epochs_list):
     available = []
@@ -719,7 +697,7 @@ class InferenceNiiDataset(Dataset):
         self.paths = dataframe['path'].tolist()
         self.labels_dx = dataframe['label_dx'].tolist()
         self.labels_phc = dataframe['label_phc'].tolist()
-        self.labels_amyloid = dataframe['label_amyloid'].tolist() # NUEVO
+        self.labels_amyloid = dataframe['label_amyloid'].tolist() 
         self.labels_mci = dataframe['label_mci'].tolist()
         self.labels_age = dataframe['label_age'].tolist()
         self.labels_gender = dataframe['label_gender'].tolist()
@@ -757,8 +735,6 @@ class InferenceNiiDataset(Dataset):
         mci = self.labels_mci[idx]
         age = self.labels_age[idx]
         gender = self.labels_gender[idx]
-        
-        # DEVOLVER TAMBIÉN AGE Y GENDER
         return img_tensor, dx, phc, amyloid, mci, age, gender
     
 
@@ -776,22 +752,21 @@ def save_multiclass_bar_plot(y_true, y_probs, output_path, epoch):
     classes = ['CN', 'MCI', 'AD']
     n_classes = len(classes)
     
-    # Binarizamos las etiquetas para calcular AUC por cada clase vs el resto
+    #binarizing
     y_true_bin = label_binarize(y_true, classes=[0, 1, 2])
     
     aucs = []
     for i in range(n_classes):
-        # Calculamos el AUC individual de la clase i
+        # individual auc class i
         score = roc_auc_score(y_true_bin[:, i], y_probs[:, i])
         aucs.append(score)
 
-    # Configuración estética de la gráfica
     plt.figure(figsize=(8, 6))
-    colors = ['#1f77b4', '#2ca02c', '#ff7f0e'] # Azul, Verde, Naranja (similar a la imagen)
+    colors = ['#1f77b4', '#2ca02c', '#ff7f0e'] # blue green orange
     
     bars = plt.bar(classes, aucs, color=colors, alpha=0.8, edgecolor='black', linewidth=1)
     
-    # Añadir los valores encima de las barras
+    # values on top of bars
     for bar in bars:
         height = bar.get_height()
         plt.text(bar.get_x() + bar.get_width()/2., height + 0.01,
@@ -807,7 +782,7 @@ def save_multiclass_bar_plot(y_true, y_probs, output_path, epoch):
     plt.close()
 
 def save_scatter_projection_amyloid(X_2d, labels, save_path, title):
-    # Definimos colores: 0 = Negativo (Azul), 1 = Positivo (Rojo)
+    # 0 negative blue, 1 positive red
     class_info = {
         0: {"name": "Amyloid Negative (0)", "color": "#1f77b4"},
         1: {"name": "Amyloid Positive (1)", "color": "#d62728"}
@@ -817,7 +792,7 @@ def save_scatter_projection_amyloid(X_2d, labels, save_path, title):
 
     for class_id in sorted(class_info.keys()):
         mask = labels == class_id
-        if not np.any(mask): # Si no hay sujetos de esta clase, la saltamos
+        if not np.any(mask): 
             continue
 
         plt.scatter(
@@ -847,7 +822,6 @@ def evaluar_en_test(model, test_loader, device, task_config):
     all_preds = []
     all_targets = []
     
-    # 1. CORRECCIÓN DEL AMARILLO: Extraemos las variables desde el diccionario de configuración
     is_regression = task_config.get("task_type") == "regression"
     num_classes = task_config.get("num_classes", 2) 
 
@@ -859,7 +833,7 @@ def evaluar_en_test(model, test_loader, device, task_config):
             labels = batch[label_idx]
             
             if images.dim() == 4:
-                images = images.unsqueeze(0)  # Convierte [C, D, H, W] en [1, C, D, H, W]
+                images = images.unsqueeze(0)  #  [C, D, H, W] into [1, C, D, H, W]
 
             outputs = model(images)
             
@@ -867,16 +841,16 @@ def evaluar_en_test(model, test_loader, device, task_config):
                 preds = outputs.squeeze(-1).cpu().numpy()
                 all_preds.extend(preds)
             else:
-                # Calculamos las probabilidades con Softmax
+                # probabilities with Softmax
                 probs = torch.softmax(outputs, dim=1).cpu().numpy()
                 
-                # 2. ADAPTACIÓN DE DIMENSIONES SEGÚN EL TIPO DE TAREA
+                # depending on task
                 if num_classes == 2:
-                    # Binario: Guardamos solo la probabilidad de la clase positiva (Array 1D)
+                    # Binary: positive class probability
                     preds = probs[:, 1]
                     all_preds.extend(preds)
                 else:
-                    # Multiclase: Guardamos la matriz completa de probabilidades (Array 2D)
+                    # complete 2D array
                     preds = probs
                     all_preds.extend(preds)
 
@@ -891,35 +865,32 @@ def evaluar_en_test(model, test_loader, device, task_config):
     all_preds = np.array(all_preds)
     all_targets = np.array(all_targets)
 
-    # 3. DIAGNÓSTICO PARA EL PROBLEMA DE sMCI vs pMCI (Evitar NaNs silenciosos)
+    # diagnosis sMCI vs pMCI
     if not is_regression:
-        # Alerta A: El modelo ha colapsado y predice valores inválidos (Explosión de gradientes)
+        
         if np.isnan(all_preds).any():
             print("\n ¡ALERTA! Las predicciones del modelo contienen valores NaN. El entrenamiento ha colapsado.")
             return float('nan')
         
-        # Alerta B: No hay suficientes clases en el conjunto de test debido a la escasez extrema
         clases_unicas = np.unique(all_targets)
         if len(clases_unicas) < 2:
             print(f"\n ¡ALERTA! El conjunto de TEST solo contiene la clase {clases_unicas}. El AUC no se puede calcular.")
             return float('nan')
 
-    # 4. CÁLCULO DE MÉTRICAS (Línea duplicada incorrecta eliminada)
+    # metrics calculation
     if is_regression:
         metric_value = r2_score(all_targets, all_preds)
     else:
         if num_classes == 2:
             metric_value = roc_auc_score(all_targets, all_preds) 
         else:
-            # Para tareas multiclase reales (ej. DX con 3 clases: CN, MCI, AD)
+            #for multiclass
             metric_value = roc_auc_score(all_targets, all_preds, multi_class='ovo')
         
     return metric_value
        
 
-# ======================================================
-# PREPARACIÓN DE DATOS Y COLA DE EXPERIMENTOS
-# ======================================================
+# preparation and queue
 import argparse
 if __name__ == "__main__":
     import argparse
@@ -932,10 +903,10 @@ if __name__ == "__main__":
     from torch.utils.data import DataLoader
     from sklearn.model_selection import train_test_split
 
-    # CONFIGURACIÓN DE ENTORNO (0: Local, 1: Clúster)
+    # configuration of the environment
     USE_CLUSTER = 0 
 
-    # --- PASO 0: GESTIÓN DE ARGUMENTOS Y DISPOSITIVO ---
+    
     if USE_CLUSTER == 1:
         parser = argparse.ArgumentParser(description="Lanza el análisis downstream de un modelo específico.")
         parser.add_argument("--config", type=int, required=True, help="ID del experimento a ejecutar (índice de la lista)")
@@ -946,7 +917,7 @@ if __name__ == "__main__":
             major, minor = torch.cuda.get_device_capability()
             print(f"PASO 0 (Clúster): Verificando GPU... (Capacidad CUDA: {major}.{minor})")
             if major < 7:
-                raise RuntimeError(f"❌ ERROR: La GPU asignada es demasiado antigua ({major}.{minor}). Se requiere >= 7.0.")
+                raise RuntimeError(f"ERROR: La GPU asignada es demasiado antigua ({major}.{minor}). Se requiere >= 7.0.")
         else:
             print("PASO 0 (Clúster): No se detectó GPU. Ejecutando en CPU.")
     else:
@@ -956,18 +927,18 @@ if __name__ == "__main__":
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f" Usando dispositivo: {DEVICE}")
 
-    # --- PARÁMETROS DE RUTAS Y CONFIGURACIÓN ---
-    ROOT_DIR = "/export/data_ml4ds/Neurocosas/databases/ADNI/M00"
-    CSV_PATH = "/export/usuarios01/nbesteban/ADNIMERGE_25Aug2023.csv"
-    AMYLOID_XLSX_PATH = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/analysis/code/downstream/UCBERKELEYAV45_amyloid_status.xlsx" 
-    MCI_XLSX_PATH = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/analysis/code/downstream/Classification_MCI_to_AD.xlsx"
-    PHC_XLSX_PATH = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/analysis/code/downstream/annual_memory_change_phc.xlsx"
+    # parameters and routes
+    ROOT_DIR = "./databases/ADNI/M00"
+    CSV_PATH = "./ADNIMERGE_25Aug2023.csv"
+    AMYLOID_XLSX_PATH = "./analysis/code/downstream/UCBERKELEYAV45_amyloid_status.xlsx" 
+    MCI_XLSX_PATH = "./analysis/code/downstream/Classification_MCI_to_AD.xlsx"
+    PHC_XLSX_PATH = "./analysis/code/downstream/annual_memory_change_phc.xlsx"
     
     COMPATIBLE_SIZE = (128, 160, 128)
     BATCH_SIZE = 4
 
     try:
-        # --- PASO 1: CARGA DE EXCEL Y CSV DE ETIQUETAS ---
+        # excel and labels
         print(" PASO 1: Cargando excels y CSVs de etiquetas...")
         amyloid_df = pd.read_excel(AMYLOID_XLSX_PATH)
         rid_to_amyloid = dict(zip(amyloid_df["RID"].astype(int), amyloid_df["SUMMARYSUVR_WHOLECEREBNORM_1.11CUTOFF"]))
@@ -993,19 +964,13 @@ if __name__ == "__main__":
         phc_df = pd.read_excel(PHC_XLSX_PATH).dropna(subset=["RID", "PHC_mem_rate"]) 
         rid_to_phc = dict(zip(phc_df["RID"].astype(int), phc_df["PHC_mem_rate"]))
         
-        # --- EN TU PASO 1 ---
         labels_df = demographics_df.copy()
         labels_df["PTID"] = labels_df["PTID"].str.strip()
-        
-        # 1. Filtrar el dataframe para quedarnos SOLAMENTE con AD y CN
-        #labels_df = labels_df[labels_df["DX_bl"].isin(["CN", "AD"])].copy()
-        #  AÑADIR ESTO: Configuración global de tareas
         
         id_to_data = {row["PTID"]: row["DX_bl"] for _, row in labels_df.iterrows()}
         
         diag_to_label = {"CN": 0, "SMC": 1, "AD": 2, "LMCI": 4, "EMCI": 5}
 
-        # --- EN TU PASO 2 ---
         print(" PASO 2: Buscando y cruzando archivos NIfTI...")
         all_nii = find_nii_files(ROOT_DIR)
         nii_info = []
@@ -1031,7 +996,7 @@ if __name__ == "__main__":
 
                 nii_info.append((rid, path, dx_label, phc_label, amyloid_label, mci_label, age_label, gender_label))
 
-        # --- PASO 3: VALIDACIÓN DE INTEGRIDAD DEL NIFTI ---
+        # niftii integrity
         print(" PASO 3: Validando integridad física de los NIfTIs...")
         valid_rows = []
         for row in tqdm(nii_info):
@@ -1055,8 +1020,7 @@ if __name__ == "__main__":
         print(f" Dataframe consolidado con {len(nii_df)} sujetos válidos.")
 
         
-        # --- PASO 5: MAPPING DE EXPERIMENTOS ---
-        # Lista centralizada de configuraciones. El script tomará la del índice asignado por config_id
+        # experiment mapping
         lista_experimentos = [
             {"name": "2_resnet_MAE_L_checkpoints_loss-ssim_tissue-True_noBG-True_m-0.75_patch-16_symTrue", 
              "type": "ResNet50_3D_MAE", 
@@ -1071,7 +1035,7 @@ if __name__ == "__main__":
         exp_actual = lista_experimentos[config_id]
         print(f" Configuración Activa -> Modelo: {exp_actual['type']} | Checkpoint: {exp_actual['name']}")
 
-        # --- PASO 6: CONFIGURACIÓN DE LA TAREA (Estilo BrainIAC) ---
+        # configuration of the task
         TASKS_CONFIG = {
             "diagnostico_alzheimer": {"task_type": "classification", "num_classes": 2, "label_idx": 1},
             #"edad_cerebral":         {"task_type": "regression",     "num_classes": 1, "label_idx": 5}
@@ -1108,14 +1072,13 @@ if __name__ == "__main__":
         
         fracciones_log = np.logspace(np.log10(0.01), np.log10(0.25), num=4)
         
-        # 2. Definimos los porcentajes fijos del resto del experimento
+        # fixed
         fracciones_resto = np.array([0.50, 0.75, 1.00])
         
-        # 3. Concatenamos ambas listas y nos aseguramos de que sean valores únicos ordenados
+        # concatenate 
         fracciones = np.unique(np.concatenate([fracciones_log, fracciones_resto]))
 
         SEMILLAS_A_PROCESAR = [42, 100, 134, 4332, 2026, 999, 29, 344, 283, 22]
-        # Cambiamos tu lista por un diccionario para extraer el valor real del porcentaje
         FRACCIONES_DICT = {"1pc": 0.01, "2pc": 0.02, "8pc": 0.08, "25pc": 0.25, "50pc": 0.50, "75pc": 0.75, "100pc": 1.0}
         TOTAL_EPOCHS = 50 
         DIRECTORIO_SALIDA = "./scratch_partitions_trials_please_bestmodel/resultados_scarcity_finetuning_seeds_tasks" 
@@ -1131,23 +1094,18 @@ if __name__ == "__main__":
         ]
 
         for seed in SEMILLAS_A_PROCESAR:
-            print(f"\n=========================================")
-            print(f" INICIANDO EXPERIMENTOS PARA SEMILLA: {seed}")
-            print(f"=========================================")
+            print(f" experiments for seed: {seed}")
             
-            # Inicializamos el generador de números aleatorios para esta corrida
             set_all_seeds(seed)
             
             # Diccionario para almacenar TODAS las métricas de esta semilla (Múltiples Tareas y Fracciones)
             metricas_de_esta_semilla = {}
             
-            # NUEVO: BUCLE DE TAREAS 
             for task_config in TASKS:
                 task_name = task_config["name"]
                 print(f"\n Evaluando tarea: {task_name}")
                 
-                # --- 1. FILTRADO ESPECÍFICO DE LA TAREA ---
-                # Partimos del dataframe completo (asumiendo que se llama nii_df)
+                # filtering task
                 df_task = nii_df.copy()
                 
                 if task_name == "AD_vs_CN":
@@ -1163,9 +1121,9 @@ if __name__ == "__main__":
                     col_stratify = "label_dx"
 
                 elif task_name == "sMCI_vs_pMCI":
-                    # Nos quedamos estrictamente con 0.0 y 1.0 (sMCI y pMCI reales)
+                    #  0.0 and 1.0 (sMCI and pMCI reales)
                     df_task = df_task[df_task["label_mci"].isin([0, 1])].copy()
-                    # Comprobación de seguridad
+                
                     if len(df_task) == 0:
                         raise ValueError("Error: El DataFrame de MCI está vacío.")
                         
@@ -1177,50 +1135,48 @@ if __name__ == "__main__":
                     col_stratify = "label_amyloid"
                 elif task_name == "PHC":
                     df_task = df_task[(df_task["label_phc"] != -1000.0) & (df_task["label_phc"].notna())]
-                    col_stratify = None # No se estratifica regresión
+                    col_stratify = None
                 elif task_name == "Age":
                     df_task = df_task[df_task["label_age"] > 0]
-                    col_stratify = None # No se estratifica regresión
+                    col_stratify = None
                 elif task_name == "Gender":
                     df_task = df_task[df_task["label_gender"] != -1]
                     col_stratify = "label_gender"
 
                 
-                # --- 3. BUCLE DE FRACCIONES TOTALMENTE ARREGLADO Y ADAPTADO ---
+                # loop fractions
                 for porcentaje_str, frac in FRACCIONES_DICT.items():
                     print(f"\n Alineando particiones para Semilla: {seed} | Tarea: {task_name} | Fracción: {porcentaje_str}")
             
-                    # 1. CONSTRUIR LA RUTA AL CSV DE LA PARTICIÓN CORRESPONDIENTE
                     ruta_csv_split = f"rids_splits_cache/split_seed_{seed}_task_{task_name}_frac_{porcentaje_str}.csv"
                     
                     if not os.path.exists(ruta_csv_split):
                         raise FileNotFoundError(f" No se encontró el split guardado en: {ruta_csv_split}. Ejecuta primero el código de embeddings.")
                     
-                    # 2. LEER EL ARCHIVO DE RIDs ALINEADO
+                    # rids file
                     df_split_actual = pd.read_csv(ruta_csv_split)
                     
-                    # Separar los RIDs según el conjunto asignado en el archivo original
+                    # separating rids (controlled)
                     rids_train = df_split_actual[df_split_actual['Set'] == 'Train']['RID'].values
                     rids_val   = df_split_actual[df_split_actual['Set'] == 'Validation']['RID'].values
                     rids_test  = df_split_actual[df_split_actual['Set'] == 'Test']['RID'].values
                     
-                    # 3. FILTRAR TU DATAFRAME REAL UTILIZANDO LOS RIDs EXACTOS (Usa df_task en minúsculas 'rid')
+                    # filtering exact rids
                     df_train_task = df_task[df_task['rid'].isin(rids_train)].copy()
                     df_val_task   = df_task[df_task['rid'].isin(rids_val)].copy()
                     df_test_task  = df_task[df_task['rid'].isin(rids_test)].copy()
                     
                     print(f" Muestras activas de Train para este ciclo ({porcentaje_str}): {len(df_train_task)}")
 
-                    # 4. INSTANCIAR LOS DATASETS NATIVOS CON TUS CONFIGURACIONES REALES
+                    
                     inference_dataset_train_sub = InferenceNiiDataset(df_train_task, target_size=COMPATIBLE_SIZE)
                     inference_dataset_val       = InferenceNiiDataset(df_val_task, target_size=COMPATIBLE_SIZE)
                     inference_dataset_test      = InferenceNiiDataset(df_test_task, target_size=COMPATIBLE_SIZE)
 
-                    # Configuramos el sufijo para que los .pth y .txt se guarden con nombres únicos
                     config_actual = task_config.copy()
                     config_actual["suffix"] = f"_{task_name}_{porcentaje_str}_seed_{seed}"
 
-                    # 5. EJECUTAMOS EL ENTRENAMIENTO (Pasando los datasets alineados por RID)
+                    # train
                     modelo_scratch, mejor_auroc_val = run_pytorch_finetuning(
                         model_type=exp_actual["type"], 
                         checkpoint_path=None, 
@@ -1232,20 +1188,20 @@ if __name__ == "__main__":
                         device=DEVICE
                     )
 
-                    print("🔬 Evaluando el modelo final en el conjunto de TEST...")
+                    print("evaluating in test final configuration")
                     test_metric = evaluar_en_test(modelo_scratch, inference_dataset_test, DEVICE, config_actual)
 
-                    # Extraemos el número para el json
+                    # number for json
                     pct_numero = int(porcentaje_str.replace("pc", ""))
 
-                    # --- 4. GUARDADO DINÁMICO EN EL DICCIONARIO ---
+                    # saving
                     metric_name = "R2" if config_actual["task_type"] == "regression" else "auroc"
                     clave_metrica = f"{pct_numero}%_{task_name}_{metric_name}"
                     
                     metricas_de_esta_semilla[clave_metrica] = test_metric
                     
                     print(f" Tarea {task_name} | Fracción {porcentaje_str} completada. Test {metric_name.upper()}: {test_metric:.4f} | .pth guardado.")
-            # --- 5. AL GUARDAR EL JSON, AHORA CONTIENE TODAS LAS TAREAS ---
+            # now all tasks
             ruta_json_final = os.path.join(DIRECTORIO_SALIDA, f"metricas_epoch_{TOTAL_EPOCHS}_seed_{seed}.json")
             with open(ruta_json_final, 'w') as f:
                 json.dump(metricas_de_esta_semilla, f, indent=4)
