@@ -73,7 +73,7 @@ def get_resnet50_3d(in_chans=1, proj_dim=128):
 def get_model(model_type, checkpoint_path, device):
     """Instancia el modelo completo (con decoder) y carga pesos."""
     
-    # 1. Instanciación del modelo correcto
+    # depending on the model
     if model_type == "ResNet18_3D_MAE":
         model = ResNet18_3D_MAE(in_chans=1)
         
@@ -87,14 +87,13 @@ def get_model(model_type, checkpoint_path, device):
         model = ResNet50_3D_UNet(in_chans=1)
 
     elif model_type == "vit_mae_base":
-        # CAMBIO: Usamos ViT3D_Autoencoder en lugar de la versión Inference
         model = ViT3D_Autoencoder(
             img_size=(128, 160, 128),
             patch_size=16, 
             embed_dim=768, 
             depth=12,
             num_heads=12,
-            decoder_embed_dim=512, # Parámetros estándar del decoder MAE
+            decoder_embed_dim=512, 
             decoder_depth=8,
             decoder_num_heads=16
         )
@@ -117,7 +116,7 @@ def get_model(model_type, checkpoint_path, device):
 
     elif "simclr" in model_type:
         print(f" El modelo {model_type} es de tipo SimCLR y NO tiene decoder por defecto.")
-        # Aquí podrías instanciar la clase SimCLR normal, pero no dará reconstrucción visual
+       
         if "resnet18" in model_type:
             model = get_resnet18_3d(in_chans=1, proj_dim=128)
         else:
@@ -126,36 +125,31 @@ def get_model(model_type, checkpoint_path, device):
     else:
         raise ValueError(f"Modelo {model_type} no soportado para visualización.")
 
-    # 2. Carga de Checkpoint
+    # loading checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
 
-    # 3. FIX: Interpolación Genérica de pos_embed
-    # Esto es vital si cambiaste el tamaño de imagen o patch entre entrenamiento e inferencia
     if 'pos_embed' in state_dict and hasattr(model, 'pos_embed'):
         pos_embed_checkpoint = state_dict['pos_embed']
         pos_embed_model = model.pos_embed
         
         if pos_embed_checkpoint.shape != pos_embed_model.shape:
-            print(f"🔄 Adaptando pos_embed: {pos_embed_checkpoint.shape} -> {pos_embed_model.shape}")
+            print(f"Adapting pos_embed: {pos_embed_checkpoint.shape} -> {pos_embed_model.shape}")
             
-            # Caso: Falta/Sobra token CLS
+            # token CLS management
             if pos_embed_checkpoint.shape[1] == pos_embed_model.shape[1] - 1:
                 cls_token_pos = pos_embed_model[:, :1, :]
                 pos_embed_checkpoint = torch.cat((cls_token_pos, pos_embed_checkpoint), dim=1)
             elif pos_embed_checkpoint.shape[1] == pos_embed_model.shape[1] + 1:
                 pos_embed_checkpoint = pos_embed_checkpoint[:, 1:, :]
             
-            # Si después de ajustar el CLS siguen siendo distintos, interpolamos espacialmente
-            if pos_embed_checkpoint.shape != pos_embed_model.shape:
-                # Lógica de interpolación trilineal (ya la tenías bien, asegúrate de que se ejecute aquí)
-                # ... (tu código de F.interpolate) ...
-                state_dict['pos_embed'] = pos_embed_checkpoint # (después de interpolar)
+            # Spatial interpolation
+            #if pos_embed_checkpoint.shape != pos_embed_model.shape:
+                #state_dict['pos_embed'] = pos_embed_checkpoint # (después de interpolar)
 
-    # 4. Carga final
+    # Final loading
     model.load_state_dict(state_dict, strict=False) 
-    # Usamos strict=False por si el checkpoint tiene pesos del proyector SimCLR 
-    # que el Autoencoder no necesita, o viceversa.
+    # strict=False in case we use the weights from SimCLR 
     
     return model.to(device).eval()
 
@@ -165,11 +159,11 @@ def guardar_rids_splits(y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender, SEEDS):
     import pandas as pd
     from sklearn.model_selection import train_test_split
 
-    # 1. RUTA DE TU CSV ORIGINAL (Cambia esta ruta por la real de tu entorno)
-    csv_path = '/home/ngutierrez/reproducibility_project/final_metadata_interactions_v4.csv' 
+    # original csv route
+    csv_path = './final_metadata_interactions_v4.csv' 
     
     if not os.path.exists(csv_path):
-        # FALLBACK: Si no encuentra el CSV, usará los índices de fila (0, 1, 2...) que mapean 1:1 con el Dataframe
+        # FALLBACK: If the csv is not found, it will use the indices from rows (0, 1, 2...) that are mapped 1:1 with the Dataframe
         rids = np.arange(len(y_dx))
         print(f" CSV no encontrado en {csv_path}. Se usarán los índices de fila como IDs correlativos.")
     else:
@@ -179,7 +173,7 @@ def guardar_rids_splits(y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender, SEEDS):
     output_dir = "rids_splits_cache"
     os.makedirs(output_dir, exist_ok=True)
 
-    # 2. Replicar exactamente el filtrado de máscaras y etiquetas de cada tarea
+    # Replicating the mask and label filters of each task
     mask_ad_cn = np.isin(y_dx, [0, 1, 2])
     y_ad_cn = np.where(np.isin(y_dx[mask_ad_cn], [0, 1]), 0, 1)
 
@@ -222,19 +216,19 @@ def guardar_rids_splits(y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender, SEEDS):
         for task_name, (mask, y_task, stratify) in tasks_config.items():
             rids_task = rids[mask]
             
-            # --- SPLIT 1: Separar el Test (25%) ---
+            # SPLIT 1: Separating Test partition(25%)
             strat_1 = y_task if stratify else None
             rids_train_val, rids_test, y_train_val, _ = train_test_split(
                 rids_task, y_task, test_size=0.25, random_state=seed, stratify=strat_1
             )
             
-            # --- SPLIT 2: Separar Train y Val (1/3 de 75% = 25%) ---
+            # SPLIT 2: Separating Train and Val (1/3 of 75% = 25%)
             strat_2 = y_train_val if stratify else None
             rids_train, rids_val, y_train, _ = train_test_split(
                 rids_train_val, y_train_val, test_size=1/3, random_state=seed, stratify=strat_2
             )
             
-            # --- BUCLE DE FRACCIONES (Escasez de datos) ---
+            # fraction loop (data scarcity)
             for porcentaje_str, f in fractions:
                 if f < 1.0:
                     strat_f = y_train if stratify else None
@@ -244,14 +238,14 @@ def guardar_rids_splits(y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender, SEEDS):
                 else:
                     rids_train_frac = rids_train
                 
-                # Estructurar los RIDs identificando a qué conjunto pertenecen
+                # Structuring the RIDs identifying what group they belong in
                 df_train = pd.DataFrame({'RID': rids_train_frac, 'Set': 'Train'})
                 df_val = pd.DataFrame({'RID': rids_val, 'Set': 'Validation'})
                 df_test = pd.DataFrame({'RID': rids_test, 'Set': 'Test'})
                 
                 df_split_final = pd.concat([df_train, df_val, df_test], ignore_index=True)
                 
-                # Guardar el CSV individual
+                # saving individual csv
                 filename = f"split_seed_{seed}_task_{task_name}_frac_{porcentaje_str}.csv"
                 df_split_final.to_csv(os.path.join(output_dir, filename), index=False)
 
@@ -260,12 +254,11 @@ def guardar_rids_splits(y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender, SEEDS):
     
 def evaluar_modelo_epoch(model_info, epoch, dataloader, embeddings_dir):
     """
-    Función worker que será ejecutada por una CPU independiente.
+    independent function
     """
     print(f"Iniciando evaluación: {model_info['name']} - Epoch {epoch}")
     
-    # 1. Extraer o cargar embeddings
-    # (El código usa la función que ya tienes definida)
+    # Extract or load embeddings
     X, y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender = get_or_extract_embeddings(
         epoch, 
         dataloader, 
@@ -274,19 +267,17 @@ def evaluar_modelo_epoch(model_info, epoch, dataloader, embeddings_dir):
         embeddings_dir
     )
     
-    # 2. Correr evaluación downstream
+    # run downstream evaluation
     results, preds, _, _, _, _, _, _, _ = evaluate_downstream(
         X, y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender
     )
-    
-    # 3. (Opcional) Aquí puedes meter tus llamadas a save_auroc_bar_plot, 
-    # plot_enhanced_cm, etc., pasando rutas dinámicas según el modelo y la epoch.
+  
 
     return {"modelo": model_info["name"], "epoch": epoch, "results": results}
 
 
 def extract_features_from_model(model, model_type, x):
-    """Maneja las diferencias en los outputs de cada arquitectura."""
+    """manages the different ourputs from each architecture"""
     if model_type == "resnet_autoencoder":
         _, z = model(x)
         if len(z.shape) == 2:
@@ -322,21 +313,15 @@ def extract_features_from_model(model, model_type, x):
         h, _ = model(x)
         return h
     elif model_type == "vit_mae_all_d":
-        # ¡AQUÍ ESTÁ EL CAMBIO! Añadimos mask_size_voxels=16
-        # Ratio 0.0 asegura que usamos la imagen completa para extraer features reales.
         _, _, z_global = model(x, mask_ratio=0.0, mask_size_voxels=16) 
         return z_global
     elif model_type == "vit_mae_base":
-        # ¡AQUÍ ESTÁ EL CAMBIO! Añadimos mask_size_voxels=16
-        # Ratio 0.0 asegura que usamos la imagen completa para extraer features reales.
-        #_, _, z_global = model(x, mask_ratio=0.0, mask_size_voxels=16) 
         z_global = model(x)
         return z_global
     elif model_type == "vit_mae_small":
         z_global = model(x)
         return z_global
     elif model_type == "vit_mae_3d":
-        # mask_ratio=0.0 es VITAL para que vea la imagen completa durante la evaluación
         _, _, z_global = model(x, mask_ratio=0.0, mask_size_voxels=16)
         return z_global
     
@@ -350,13 +335,10 @@ def extract_features_from_model(model, model_type, x):
 
     elif model_type == "vit_simclr_brainiac":
         h, _ = model(x)
-        return h  # Devolvemos la representación global h, no la proyección
+        return h  
 
 
-# ======================================================
-# 3. EXTRACCIÓN Y CACHÉ DE EMBEDDINGS
-# ======================================================
-# Añade 'embeddings_dir' como último parámetro
+# extraction and embeddings
 def get_or_extract_embeddings(epoch, dataloader, model_type, checkpoint_path, embeddings_dir):
     cache_file = f"{embeddings_dir}/features_epoch_{epoch}_v4_amyloid_mci_age_gender.pkl" 
     
@@ -366,11 +348,11 @@ def get_or_extract_embeddings(epoch, dataloader, model_type, checkpoint_path, em
     print(f"Extrayendo características para epoch {epoch}...")
     model = get_model(model_type, checkpoint_path, DEVICE)
     
-    # Añadimos las listas para age y gender
+   
     latent_vectors, labels_dx_list, labels_phc_list, labels_amyloid_list, labels_mci_list, labels_age_list, labels_gender_list = [], [], [], [], [], [], []
     
     with torch.no_grad():
-        # Añadimos ages y genders al for
+        
         for images, dxs, phcs, amyloids, mcis, ages, genders in tqdm(dataloader, leave=False):
             images = images.to(DEVICE)
             features = extract_features_from_model(model, model_type, images)
@@ -380,7 +362,6 @@ def get_or_extract_embeddings(epoch, dataloader, model_type, checkpoint_path, em
             labels_phc_list.append(phcs.numpy())
             labels_amyloid_list.append(amyloids.numpy())
             labels_mci_list.append(mcis.numpy()) 
-            # AÑADIR:
             labels_age_list.append(ages.numpy())
             labels_gender_list.append(genders.numpy())
             
@@ -389,10 +370,10 @@ def get_or_extract_embeddings(epoch, dataloader, model_type, checkpoint_path, em
     y_phc = np.concatenate(labels_phc_list, axis=0)
     y_amyloid = np.concatenate(labels_amyloid_list, axis=0)
     y_mci = np.concatenate(labels_mci_list, axis=0)
-    y_age = np.concatenate(labels_age_list, axis=0)       # AÑADIDO
-    y_gender = np.concatenate(labels_gender_list, axis=0) # AÑADIDO
+    y_age = np.concatenate(labels_age_list, axis=0)      
+    y_gender = np.concatenate(labels_gender_list, axis=0) 
 
-    # Guardar TODAS las variables en el cache
+    # saving all the variables
     joblib.dump((X, y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender), cache_file) 
 
     return X, y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender
@@ -439,9 +420,9 @@ def regroup_dx_for_plot(y_dx):
 def save_scatter_projection(X_2d, labels, save_path, title):
 
     class_info = {
-        0: {"name": "CN + SMC", "color": "#1f77b4"},   # azul
-        1: {"name": "AD",        "color": "#d62728"},  # rojo
-        2: {"name": "LMCI + EMCI","color": "#2ca02c"}  # verde
+        0: {"name": "CN + SMC", "color": "#1f77b4"},   # blue
+        1: {"name": "AD",        "color": "#d62728"},  # red
+        2: {"name": "LMCI + EMCI","color": "#2ca02c"}  # green
     }
 
     plt.figure(figsize=(6,5))
@@ -473,9 +454,7 @@ def save_scatter_projection(X_2d, labels, save_path, title):
     plt.savefig(save_path, dpi=300)
     plt.close()
 
-# ======================================================
-# 4. EVALUACIÓN DOWNSTREAM (TOTALMENTE INDEPENDIENTE)
-# ======================================================
+# downstream evaluation
 def evaluate_downstream(X, y_dx_raw, y_phc_raw, y_amyloid_raw, y_mci_raw, y_age_raw, y_gender_raw, seed=42):
     results = {}
     preds = {}
@@ -492,14 +471,12 @@ def evaluate_downstream(X, y_dx_raw, y_phc_raw, y_amyloid_raw, y_mci_raw, y_age_
     if not os.path.exists("rids_splits_cache"):
         guardar_rids_splits(y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender, SEEDS)
 
-    # Dentro de run_binary_task (y en las secciones de Multiclase, PHC, Age, Gender):
-    # Reemplaza TODOS los random_state=42 por random_state=seed como aquí:
     def run_binary_task(X_task, y_task, task_name, results_dict, preds_dict):
         if np.sum(y_task != -1) > 20 and len(np.unique(y_task)) > 1:
             X_task = normalize(X_task)
             y_task = y_task.astype(int)
 
-            # Modificado para usar la variable 'seed'
+            #using seed
             X_train_val, X_test, y_train_val, y_test = train_test_split(
                 X_task, y_task, test_size=0.25, random_state=seed, stratify=y_task
             )
@@ -523,12 +500,11 @@ def evaluate_downstream(X, y_dx_raw, y_phc_raw, y_amyloid_raw, y_mci_raw, y_age_
                 if len(np.unique(y_train_frac)) < 2:
                     continue
 
-                # --- CORRECCIÓN: CONJUNTO DE VALIDACIÓN FIJO ---
-                # 1. Combinamos la fracción de entrenamiento actual con el conjunto de validación INVARIABLE
+                # validation is fixed
                 X_cv = np.vstack((X_train_frac, X_val))
                 y_cv = np.concatenate((y_train_frac, y_val))
 
-                # 2. Creamos una máscara de índices: -1 para muestras de Train, 0 para muestras de Validación
+                # index mask
                 split_index = np.concatenate((
                     -1 * np.ones(len(X_train_frac)),
                     0 * np.ones(len(X_val))
@@ -540,23 +516,22 @@ def evaluate_downstream(X, y_dx_raw, y_phc_raw, y_amyloid_raw, y_mci_raw, y_age_
                 ))
                 param_grid = {"logisticregression__C": np.logspace(-4, 2, 10)}
                 
-                # 3. Le pasamos el split predefinido a GridSearchCV en el parámetro 'cv'
+                # giving the predefined split to GridSearchCV within the parameter 'cv'
                 grid = GridSearchCV(pipe, param_grid, cv=custom_split)
-                grid.fit(X_cv, y_cv)  # Se entrena en Train Frac y se evalúa la cuadrícula en X_val
+                grid.fit(X_cv, y_cv)  # trained on Train Frac and evaluated on X_val
 
-                # Predicciones sobre el conjunto de TEST invariable
-                # Predicciones sobre el conjunto de TEST invariable
+                # predictions over the invariant test partition
                 y_score_test = grid.predict_proba(X_test)[:, 1]
                 y_pred_test = (y_score_test > 0.5).astype(int)
 
-                # Almacenar métricas indexadas por la fracción
+                # getting the metrics based on the percentage of data used in train
                 results_dict[f'{prefix}{task_name}_b_acc'] = balanced_accuracy_score(y_test, y_pred_test)
                 results_dict[f'{prefix}{task_name}_mcc'] = matthews_corrcoef(y_test, y_pred_test)
                 results_dict[f'{prefix}{task_name}_auroc'] = roc_auc_score(y_test, y_score_test)
                 
                 preds_dict[f'{prefix}{task_name}'] = (y_test, y_score_test)
 
-                # Clonar la ejecución al 100% sin prefijo para no romper el flujo posterior del script original
+                # cloning the execution
                 if f == 1.0:
                     results_dict[f'{task_name}_b_acc'] = results_dict[f'{prefix}{task_name}_b_acc']
                     results_dict[f'{task_name}_auroc'] = results_dict[f'{prefix}{task_name}_auroc']
@@ -627,7 +602,7 @@ def evaluate_downstream(X, y_dx_raw, y_phc_raw, y_amyloid_raw, y_mci_raw, y_age_
                 results['Multi_3Class_auroc'] = results[f'{prefix}Multi_3Class_auroc']
                 preds['Multi_3Class'] = preds[f'{prefix}Multi_3Class']
 
-    #  Regresión PHC (Sin estratificación por ser continua)
+    #  Regression PHC 
     mask4 = (y_phc != -1000.0) & (~np.isnan(y_phc))
     if np.sum(mask4) > 20:
         X4 = X_valid[mask4]
@@ -652,7 +627,7 @@ def evaluate_downstream(X, y_dx_raw, y_phc_raw, y_amyloid_raw, y_mci_raw, y_age_
             else:
                 X4_train_frac, y4_train_frac = X4_train, y4_train
 
-            # --- SOLUCIÓN: Definición local de X4_cv, y4_cv y custom_split para Regresión ---
+            
             X4_cv = np.vstack((X4_train_frac, X4_val))
             y4_cv = np.concatenate((y4_train_frac, y4_val))
 
@@ -680,7 +655,7 @@ def evaluate_downstream(X, y_dx_raw, y_phc_raw, y_amyloid_raw, y_mci_raw, y_age_
     if np.sum(mask5) > 20:
         run_binary_task(X_valid[mask5], y_amyloid[mask5], 'Amyloid', results, preds)
 
-    #  Age Regression (Sin estratificación)
+    #  Age Regression (no stratification)
     mask_age = (y_age > 0) & (~np.isnan(y_age))
     if np.sum(mask_age) > 20:
         X_age = X_valid[mask_age]
@@ -724,8 +699,7 @@ def evaluate_downstream(X, y_dx_raw, y_phc_raw, y_amyloid_raw, y_mci_raw, y_age_
 
     return results, preds, X_valid, y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender
 
-# --- FUNCIONES DE VISUALIZACIÓN ---
-
+# visualization functions
 def save_roc_comparison(all_model_preds, save_path, title="Task ROC Comparison"):
     plt.figure(figsize=(7, 7))
     for name, (y_true, y_score) in all_model_preds.items():
@@ -747,7 +721,7 @@ def save_auroc_bar_plot(results_dict, save_path):
     """ Grafica una comparativa de barras de AUROC filtrando las desviaciones estándar """
     df = pd.DataFrame(results_dict).T.reset_index().rename(columns={'index': 'Model'})
     
-    # SOLUCIÓN CRÍTICA 3: Filtrar para quedarse solo con las medias de AUROC o la tarea multiclase, evitando barras de STD inservibles
+   
     cols = [c for c in df.columns if 'auroc' in c.lower() and ('mean' in c.lower() or 'multi' in c.lower())] + ['Model']
     df_melted = df[cols].melt(id_vars='Model', var_name='Task', value_name='AUROC')
     
@@ -858,12 +832,11 @@ def find_nii_files(root):
                 nii_paths.append(full_path)
     return nii_paths
 
-# --- FUNCIÓN RECUPERADA QUE FALTABA ---
+
 def get_subject_id(path):
     match = re.search(r'(\d{3})S(\d{4})', str(path))
     if match: return f"{match.groups()[0]}_S_{match.groups()[1]}"
     return None
-# ---------------------------------------
 
 def get_last_available_epoch(checkpoint_dir, epochs_list):
     available = []
@@ -880,7 +853,7 @@ class InferenceNiiDataset(Dataset):
         self.paths = dataframe['path'].tolist()
         self.labels_dx = dataframe['label_dx'].tolist()
         self.labels_phc = dataframe['label_phc'].tolist()
-        self.labels_amyloid = dataframe['label_amyloid'].tolist() # NUEVO
+        self.labels_amyloid = dataframe['label_amyloid'].tolist() 
         self.labels_mci = dataframe['label_mci'].tolist()
         self.labels_age = dataframe['label_age'].tolist()
         self.labels_gender = dataframe['label_gender'].tolist()
@@ -919,7 +892,6 @@ class InferenceNiiDataset(Dataset):
         age = self.labels_age[idx]
         gender = self.labels_gender[idx]
         
-        # DEVOLVER TAMBIÉN AGE Y GENDER
         return img_tensor, dx, phc, amyloid, mci, age, gender
     
 
@@ -937,22 +909,22 @@ def save_multiclass_bar_plot(y_true, y_probs, output_path, epoch):
     classes = ['CN', 'MCI', 'AD']
     n_classes = len(classes)
     
-    # Binarizamos las etiquetas para calcular AUC por cada clase vs el resto
+    # binarizing labels
     y_true_bin = label_binarize(y_true, classes=[0, 1, 2])
     
     aucs = []
     for i in range(n_classes):
-        # Calculamos el AUC individual de la clase i
+        # individual auc of class i
         score = roc_auc_score(y_true_bin[:, i], y_probs[:, i])
         aucs.append(score)
 
-    # Configuración estética de la gráfica
+    # design graph
     plt.figure(figsize=(8, 6))
-    colors = ['#1f77b4', '#2ca02c', '#ff7f0e'] # Azul, Verde, Naranja (similar a la imagen)
+    colors = ['#1f77b4', '#2ca02c', '#ff7f0e'] # blue, green, orange
     
     bars = plt.bar(classes, aucs, color=colors, alpha=0.8, edgecolor='black', linewidth=1)
     
-    # Añadir los valores encima de las barras
+    # adding the values on top of the bars
     for bar in bars:
         height = bar.get_height()
         plt.text(bar.get_x() + bar.get_width()/2., height + 0.01,
@@ -968,7 +940,7 @@ def save_multiclass_bar_plot(y_true, y_probs, output_path, epoch):
     plt.close()
 
 def save_scatter_projection_amyloid(X_2d, labels, save_path, title):
-    # Definimos colores: 0 = Negativo (Azul), 1 = Positivo (Rojo)
+    # defining the colors 0 blue negative and 1 red positive
     class_info = {
         0: {"name": "Amyloid Negative (0)", "color": "#1f77b4"},
         1: {"name": "Amyloid Positive (1)", "color": "#d62728"}
@@ -978,7 +950,7 @@ def save_scatter_projection_amyloid(X_2d, labels, save_path, title):
 
     for class_id in sorted(class_info.keys()):
         mask = labels == class_id
-        if not np.any(mask): # Si no hay sujetos de esta clase, la saltamos
+        if not np.any(mask):
             continue
 
         plt.scatter(
@@ -1026,36 +998,33 @@ def run_experiment(experiment_name, model_type, inference_loader, device):
     COMPATIBLE_SIZE = (128, 160, 128) 
 
     if MODEL_TYPE == "resnet_simclr":
-        CHECKPOINT_DIR = f"/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/simclr/checkpoints/{EXPERIMENT_NAME}"
+        CHECKPOINT_DIR = f"./simclr/checkpoints/{EXPERIMENT_NAME}"
     elif MODEL_TYPE == "vit_simclr_brainiac":
-        CHECKPOINT_DIR = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/checkpoints/SimCLR_vit_base_brainiac"
+        CHECKPOINT_DIR = "./checkpoints/SimCLR_vit_base_brainiac"
     elif MODEL_TYPE == "simclr":
-        CHECKPOINT_DIR = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/checkpoints/vit_databases_simclr_all_d/checkpoints"
+        CHECKPOINT_DIR = "./checkpoints/vit_databases_simclr_all_d/checkpoints"
     elif MODEL_TYPE == "resnet50":
-        CHECKPOINT_DIR = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/checkpoints/SimCLR_resnet50_simclr"
+        CHECKPOINT_DIR = "./checkpoints/SimCLR_resnet50_simclr"
     elif MODEL_TYPE == "resnet18":
-        CHECKPOINT_DIR = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/checkpoints/SimCLR_resnet18_simclr"
+        CHECKPOINT_DIR = "./checkpoints/SimCLR_resnet18_simclr"
     elif MODEL_TYPE == "ResNet34_3D_MAE":
-        CHECKPOINT_DIR = F"/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/checkpoints/1_resnet_tensors_loss_and_model/{EXPERIMENT_NAME}/checkpoints"
+        CHECKPOINT_DIR = F"./checkpoints/1_resnet_tensors_loss_and_model/{EXPERIMENT_NAME}/checkpoints"
     elif MODEL_TYPE == "UNETresnetL":
-        CHECKPOINT_DIR = F"/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/checkpoints/1_resnet_tensors_loss_and_model/{EXPERIMENT_NAME}/checkpoints"
+        CHECKPOINT_DIR = F"./checkpoints/1_resnet_tensors_loss_and_model/{EXPERIMENT_NAME}/checkpoints"
     elif MODEL_TYPE == "ResNet18_3D_MAE":
-        CHECKPOINT_DIR = F"/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/checkpoints/1_resnet_tensors_loss_and_model/{EXPERIMENT_NAME}/checkpoints"
+        CHECKPOINT_DIR = F"./checkpoints/1_resnet_tensors_loss_and_model/{EXPERIMENT_NAME}/checkpoints"
     elif MODEL_TYPE == "ResNet50_3D_MAE":
-        CHECKPOINT_DIR = F"/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/checkpoints/1_resnet_tensors_loss_and_model/{EXPERIMENT_NAME}/checkpoints"
+        CHECKPOINT_DIR = F"./checkpoints/1_resnet_tensors_loss_and_model/{EXPERIMENT_NAME}/checkpoints"
 
 
 
 
-    # ======================================================
-    # BUCLE PRINCIPAL SIMPLIFICADO
-    # ======================================================
+    # main simplified loop
     with open(LOG_FILE, "w") as f:
         f.write("Epoch | AD_vs_CN_Acc | LMCI_vs_EMCI_Acc | Multi_3Class | PHC_R2 | Amyloid_Acc\n")
 
     last_epoch = get_last_available_epoch(CHECKPOINT_DIR, EPOCHS_TO_PROCESS)
 
-    # AÑADIDO: y_mci_base al final
     X_base, y_dx_base, y_phc_base, y_amyloid_base, y_mci_base, y_age_base, y_gender_base = get_or_extract_embeddings(
         last_epoch,
         inference_loader,
@@ -1078,18 +1047,10 @@ def run_experiment(experiment_name, model_type, inference_loader, device):
         epoch_dir = f"{RESULTS_DIR}/epoch_{epoch}"
         os.makedirs(epoch_dir, exist_ok=True)
 
-        #  Embeddings (AÑADIDO: y_mci)
         X, y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender = get_or_extract_embeddings(
             epoch, inference_loader, MODEL_TYPE, checkpoint_file, EMBEDDINGS_DIR
         )
 
-        #  Downstream (AÑADIDO: y_clean_mci como retorno y y_mci como parámetro)
-        # ANTES:
-        # metrics, preds, X_clean, y_clean_dx, ... = evaluate_downstream(X, y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender)
-        # with open(f"{epoch_dir}/metricas_epoch_{epoch}.json", "w") as f:
-        #     json.dump(metrics, f, indent=4)
-
-        # DESPUÉS: Añadir bucle de 4 semillas aleatorias fijas
         for epoch in EPOCHS_TO_PROCESS:
             checkpoint_file = f"{CHECKPOINT_DIR}/checkpoint_epoch_{epoch}.pth"
             if not os.path.exists(checkpoint_file):
@@ -1097,12 +1058,12 @@ def run_experiment(experiment_name, model_type, inference_loader, device):
             epoch_dir = f"{RESULTS_DIR}/epoch_{epoch}"
             os.makedirs(epoch_dir, exist_ok=True)
 
-            # Extracción de Embeddings única (los embeddings no cambian con la semilla del clasificador)
+            # embedding extraction
             X, y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender = get_or_extract_embeddings(
                 epoch, inference_loader, MODEL_TYPE, checkpoint_file, EMBEDDINGS_DIR
             )
 
-            # Definir 4 semillas aleatorias diferentes
+            # random seeds
             lista_semillas = [42, 100, 134, 4332, 2026, 999, 29, 344, 283, 22, 43]
 
             if not os.path.exists("rids_splits_cache2"):
@@ -1114,51 +1075,47 @@ def run_experiment(experiment_name, model_type, inference_loader, device):
                     X, y_dx, y_phc, y_amyloid, y_mci, y_age, y_gender, seed=seed
                 )
                 
-                # GUARDAR UN JSON INDEPENDIENTE POR SEMILLA
+                # saving independent json per seed
                 ruta_json_seed = f"{epoch_dir}/metricas_epoch_{epoch}_seed_{seed}.json"
                 with open(ruta_json_seed, "w") as f:
                     json.dump(metrics, f, indent=4)
-# ======================================================
-# PREPARACIÓN DE DATOS Y COLA DE EXPERIMENTOS
-# ======================================================
+# data preparation and experiment queue
 import argparse
 if __name__ == "__main__":
     
     USE_CLUSTER = 0 #if i am using or not the cluster to paral- (0 no 1 yes)
 
     if USE_CLUSTER == 1:
-        # --- NUEVO: Leer argumento del clúster ---
+        # reading cluster configuration
         parser = argparse.ArgumentParser(description="Lanza el análisis downstream de un modelo específico.")
         parser.add_argument("--config", type=int, required=True, help="ID del experimento a ejecutar (0-6)")
         args = parser.parse_args()
-        # -----------------------------------------
         import traceback
-
         import torch
         if torch.cuda.is_available():
-            # get_device_capability devuelve una tupla, ej: (6, 1) para la 1080 Ti
+          
             major, minor = torch.cuda.get_device_capability()
             print(f" PASO 0: Verificando GPU... (Capacidad CUDA: {major}.{minor})")
             
             if major < 7:
                 raise RuntimeError(
                     f"\n{'='*60}\n"
-                    f" ERROR FATAL DE COMPATIBILIDAD DE GPU \n"
-                    f"El clúster ha asignado una GPU demasiado antigua (Capacidad {major}.{minor}).\n"
-                    f"Esta versión de PyTorch requiere una capacidad mínima de 7.0.\n"
-                    f"Abortando la ejecución INMEDIATAMENTE para no malgastar tiempo.\n"
+                    f" ERROR GPU compatibility\n"
+                    f"old GPU (Capacity {major}.{minor}).\n"
+                    f"This PyTorch version requires a minimum capacity of 7.0.\n"
+                    f"abort :(.\n"
                     f"{'='*60}"
                 )
             else:
-                print(" PASO 0: No se detectó GPU. Ejecutando en CPU.")
+                print(" in cpu")
 
-        print(f" PASO 1: Iniciando script para el config ID: {args.config}")
+        print(f" Step 1: initializing the script for the ID config: {args.config}")
         DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        ROOT_DIR = "/export/data_ml4ds/Neurocosas/databases/ADNI/M00"
-        CSV_PATH = "/export/usuarios01/nbesteban/ADNIMERGE_25Aug2023.csv"
-        AMYLOID_XLSX_PATH = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/analysis/code/downstream/UCBERKELEYAV45_amyloid_status.xlsx" 
-        MCI_XLSX_PATH = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/analysis/code/downstream/Classification_MCI_to_AD.xlsx"
-        PHC_XLSX_PATH = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/analysis/code/downstream/annual_memory_change_phc.xlsx"
+        ROOT_DIR = "./databases/ADNI/M00"
+        CSV_PATH = "./ADNIMERGE_25Aug2023.csv"
+        AMYLOID_XLSX_PATH = "./analysis/code/downstream/UCBERKELEYAV45_amyloid_status.xlsx" 
+        MCI_XLSX_PATH = "./analysis/code/downstream/Classification_MCI_to_AD.xlsx"
+        PHC_XLSX_PATH = "./analysis/code/downstream/annual_memory_change_phc.xlsx"
         COMPATIBLE_SIZE = (128, 160, 128)
         BATCH_SIZE = 4
 
@@ -1167,25 +1124,24 @@ if __name__ == "__main__":
             amyloid_df = pd.read_excel(AMYLOID_XLSX_PATH)
             rid_to_amyloid = dict(zip(amyloid_df["RID"].astype(int), amyloid_df["SUMMARYSUVR_WHOLECEREBNORM_1.11CUTOFF"]))
 
-            # --- NUEVO: Cargar MCI y mapear a binario ---
             mci_df = pd.read_excel(MCI_XLSX_PATH)
             mci_map = {"Stable-MCI": 0, "Converter-MCI": 1}
-            # Creamos un diccionario RID -> 0 o 1. Si no existe o tiene otro valor, guardará -1
+            
             rid_to_mci = {int(row["RID"]): mci_map.get(row["CLASSIFICATION"], -1) 
                             for _, row in mci_df.dropna(subset=["RID"]).iterrows()}
-            # --------------------------------------------
+
 
             print(" Cargando Demográficos (Edad y Sexo)...")
-            # CUIDADO: ¡ADNIMERGE es un CSV, no un Excel! Usa read_csv
+          
             demographics_df = pd.read_csv(CSV_PATH, low_memory=False) 
             rid_to_age = dict(zip(demographics_df['RID'], demographics_df['AGE']))
             rid_to_gender = dict(zip(demographics_df['RID'], demographics_df['PTGENDER']))
             gender_map = {"Male": 0, "Female": 1}
-            # =========================
 
-            print(" Cargando Excel de PHC_mem_rate...")
+
+            print(" Loading phc Excel...")
             phc_df = pd.read_excel(PHC_XLSX_PATH)
-            # Limpiamos posibles NaNs en la variable objetivo o RID
+            # eliminating possible NaNs
             phc_df = phc_df.dropna(subset=["RID", "PHC_mem_rate"]) 
             rid_to_phc = dict(zip(phc_df["RID"].astype(int), phc_df["PHC_mem_rate"]))
             
@@ -1199,7 +1155,7 @@ if __name__ == "__main__":
 
             diag_to_label = {"CN": 0, "SMC": 1, "AD": 2, "LMCI": 4, "EMCI": 5}
 
-            print(" PASO 3: Buscando NIfTIs...")
+            print(" Step 3: Searching for NIfTIs...")
             all_nii = find_nii_files(ROOT_DIR)
             nii_info = []
             
@@ -1216,18 +1172,16 @@ if __name__ == "__main__":
 
                     phc_label = rid_to_phc.get(rid, -1000.0)
                     
-                    # --- NUEVO: Extraer etiqueta MCI ---
+                    # mci extraction (label)
                     mci_label = rid_to_mci.get(rid, -1)
-                    # -----------------------------------
                     
                     age_label = rid_to_age.get(rid, -1.0)
                     gender_raw = rid_to_gender.get(rid, "Unknown")
                     gender_label = gender_map.get(gender_raw, -1)
 
-                    # Añadir a nii_info (recuerda actualizar el orden si es necesario)
                     nii_info.append((path, dx_label, phc_label, amyloid_label, mci_label, age_label, gender_label))
 
-            print(f" PASO 4: Validando NIfTIs...")
+            print(f" Step 4: Validating NIfTIs...")
             valid_rows = []
             for path, dx, phc, amyloid, mci, age, gender in tqdm(nii_info):
                 try:
@@ -1236,19 +1190,17 @@ if __name__ == "__main__":
                 except Exception:
                     continue
 
-            # --- ACTUALIZADO: Añadir 'label_mci' a las columnas del DataFrame ---
             nii_df = pd.DataFrame(valid_rows, columns=["path", "label_dx", "label_phc", "label_amyloid", "label_mci", "label_age", "label_gender"])
             print(f" DataFrame listo con {len(nii_df)} sujetos válidos.")
 
-            print(" PASO 5: Creando el DataLoader...")
+            print(" Step 5: Creating the DataLoader...")
             inference_dataset = InferenceNiiDataset(nii_df, target_size=COMPATIBLE_SIZE)
             
-            # Recuerda mantener num_workers=0 para evitar los crasheos de 8 segundos
             inference_loader = DataLoader(inference_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=False)
 
-            print("🟢 PASO 6: Seleccionando el modelo según el config...")
+            print("step 6: Selecting the model based on the configuration...")
             
-            # Tu lista actúa como el diccionario. El índice es el número del --config
+            # the index defines the configuration
             lista_experimentos = [
                 {"name": "vit_databases_curriculum_ssim_decoder_v3_con_loss_contrastiva1", "type": "vit_mae_3d"},         # Config 0
                 {"name": "vit_databases_curriculum_ssim_decoder_v3_con_loss_contrastiva_01", "type": "vit_mae_3d"},       # Config 1
@@ -1341,16 +1293,16 @@ if __name__ == "__main__":
             ]
             
 
-            # Validación de seguridad: Comprobar que el número del clúster existe en la lista
+            # validation, managing errors
             if args.config < 0 or args.config >= len(lista_experimentos):
                 raise ValueError(f"El ID proporcionado (--config {args.config}) no existe en la lista. Debe ser entre 0 y {len(lista_experimentos)-1}.")
 
-            # Seleccionamos ÚNICAMENTE el experimento que nos ha pedido el clúster
+            # selecting the chosen experiment
             exp_elegido = lista_experimentos[args.config]
 
-            print(f"\n EJECUTANDO ÚNICO TRABAJO: {exp_elegido['name']} (Tipo: {exp_elegido['type']})\n")
+            print(f"\n Running: {exp_elegido['name']} (Tipo: {exp_elegido['type']})\n")
             
-            # Lanzamos la función
+            # running
             run_experiment(exp_elegido["name"], exp_elegido["type"], inference_loader, DEVICE)
 
         except Exception as e:
@@ -1368,25 +1320,25 @@ if __name__ == "__main__":
         from torch.utils.data import DataLoader
         import traceback
 
-        # --- CONFIGURACIÓN LOCAL ---
+        # local configuration
         DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        ROOT_DIR = "/export/data_ml4ds/Neurocosas/databases/ADNI/M00"
-        CSV_PATH = "/export/usuarios01/nbesteban/ADNIMERGE_25Aug2023.csv"
-        AMYLOID_XLSX_PATH = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/analysis/code/downstream/UCBERKELEYAV45_amyloid_status.xlsx" 
-        MCI_XLSX_PATH = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/analysis/code/downstream/Classification_MCI_to_AD.xlsx"
-        PHC_XLSX_PATH = "/export/data_ml4ds/Neurocosas/FOUNDATION_MODELS/NEW/curriculum_patches/analysis/code/downstream/annual_memory_change_phc.xlsx"
+        ROOT_DIR = "./databases/ADNI/M00"
+        CSV_PATH = "./ADNIMERGE_25Aug2023.csv"
+        AMYLOID_XLSX_PATH = "./analysis/code/downstream/UCBERKELEYAV45_amyloid_status.xlsx" 
+        MCI_XLSX_PATH = "./analysis/code/downstream/Classification_MCI_to_AD.xlsx"
+        PHC_XLSX_PATH = "./analysis/code/downstream/annual_memory_change_phc.xlsx"
 
         COMPATIBLE_SIZE = (128, 160, 128)
-        BATCH_SIZE = 4  # Ajustado para no saturar la GPU local
+        BATCH_SIZE = 4 
 
     
         try:
             print(f" usando dispositivo: {DEVICE}")
             
-            # 1. Cargar Excels y CSVs
+            # excels and csv
             print(" PASO 1: Cargando etiquetas y datos demográficos...")
             
-            # Amiloide
+            # Amyloid
             amyloid_df = pd.read_excel(AMYLOID_XLSX_PATH)
             rid_to_amyloid = dict(zip(amyloid_df["RID"].astype(int), amyloid_df["SUMMARYSUVR_WHOLECEREBNORM_1.11CUTOFF"]))
 
@@ -1396,7 +1348,7 @@ if __name__ == "__main__":
             rid_to_mci = {int(row["RID"]): mci_map.get(row["CLASSIFICATION"], -1) 
                             for _, row in mci_df.dropna(subset=["RID"]).iterrows()}
 
-            # Demográficos (ADNIMERGE es CSV)
+            # dem
             demographics_df = pd.read_csv(CSV_PATH, low_memory=False)
             rid_to_age = dict(zip(demographics_df['RID'], demographics_df['AGE']))
             rid_to_gender = dict(zip(demographics_df['RID'], demographics_df['PTGENDER']))
@@ -1406,14 +1358,14 @@ if __name__ == "__main__":
             phc_df = pd.read_excel(PHC_XLSX_PATH).dropna(subset=["RID", "PHC_mem_rate"])
             rid_to_phc = dict(zip(phc_df["RID"].astype(int), phc_df["PHC_mem_rate"]))
             
-            # Diagnóstico base
-            labels_df = demographics_df.copy() # Usamos el mismo CSV cargado
+            # base diagnosis
+            labels_df = demographics_df.copy() 
             labels_df["PTID"] = labels_df["PTID"].str.strip()
             id_to_data = {row["PTID"]: row["DX_bl"] for _, row in labels_df.iterrows()}
             diag_to_label = {"CN": 0, "SMC": 1, "AD": 2, "LMCI": 4, "EMCI": 5}
 
-            # 2. Buscar y cruzar NIfTIs
-            print(" PASO 2: Buscando y cruzando archivos NIfTI...")
+            # searching for niftis
+            print(" Step 2: Finging NIfTI files...")
             all_nii = find_nii_files(ROOT_DIR)
             nii_info = []
             
@@ -1426,7 +1378,7 @@ if __name__ == "__main__":
                     match = re.search(r'(\d{3})S(\d{4})', str(path))
                     rid = int(match.groups()[1]) if match else -1
                     
-                    # Extraer todas las etiquetas
+                    # label extraction
                     phc_label = rid_to_phc.get(rid, -1000.0)
                     amyloid_label = rid_to_amyloid.get(rid, -1)
                     mci_label = rid_to_mci.get(rid, -1)
@@ -1435,8 +1387,8 @@ if __name__ == "__main__":
 
                     nii_info.append((path, dx_label, phc_label, amyloid_label, mci_label, age_label, gender_label))
 
-            # 3. Validar integridad de archivos
-            print(" PASO 3: Validando integridad de NIfTIs...")
+            # validating file integrity
+            print(" Step 3: validating NIfTIs integrity...")
             valid_rows = []
             for row in tqdm(nii_info):
                 path = row[0]
@@ -1446,7 +1398,7 @@ if __name__ == "__main__":
                 except Exception:
                     continue
 
-            # 4. Crear DataFrame y DataLoader
+            # DataFrame & DataLoader
             nii_df = pd.DataFrame(valid_rows, columns=[
                 "path", "label_dx", "label_phc", "label_amyloid", 
                 "label_mci", "label_age", "label_gender"
@@ -1458,11 +1410,11 @@ if __name__ == "__main__":
                 inference_dataset, 
                 batch_size=BATCH_SIZE, 
                 shuffle=False, 
-                num_workers=0, # 0 es más seguro para local en Windows
+                num_workers=2, 
                 pin_memory=True if torch.cuda.is_available() else False
             )
 
-            # 5. Ejecutar lista de experimentos
+            # running
             lista_experimentos = [
                 #{"name": "1_CURRICULUM_L2_long_shapes_COSINE/ssim", "type": "ResNet50_3D_MAE"},
                 {"name": "2_local_test_large_loss-ms-ssim-true_tissue-True_noBG-True_m-0.75_patch-16_symTrue", "type": "ResNet50_3D_MAE"},
@@ -1489,9 +1441,9 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f" Error en {exp['name']}: {e}")
 
-            print(f"\nLanzando {len(lista_experimentos)} experimentos en paralelo usando {num_cpus_local} CPUs...")
+            print(f"\nRunning {len(lista_experimentos)} parallel experiments using {num_cpus_local} CPUs...")
             
-            # Reemplazamos tu bucle 'for' original por la ejecución en paralelo de Joblib
+            
             Parallel(n_jobs=num_cpus_local)(
                 delayed(procesar_experimento_seguro)(exp, inference_loader, DEVICE)
                 for exp in lista_experimentos
